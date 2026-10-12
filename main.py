@@ -102,6 +102,9 @@ def load_groups():
         for base_group, colors in info["base_group_colors"].items():
             for c in colors:
                 reverse[tipo][c] = base_group
+        # сортировка по алфавиту — с учётом русских букв
+        reverse[tipo] = dict(sorted(reverse[tipo].items(),
+                                    key=lambda kv: kv[0].casefold()))
     return {
         "base_groups": raw["base_groups"],
         "shift_map": raw["shift_map"],
