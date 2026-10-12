@@ -1,6 +1,7 @@
 import json
 import math
 import os
+import sys
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 
@@ -48,7 +49,15 @@ def save_config(cfg):
 def load_json(path):
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
-
+    
+def resource_path(name):
+    local = os.path.join(os.path.dirname(sys.executable), name) \
+            if getattr(sys, "frozen", False) else name
+    if os.path.exists(local):
+        return local
+    if hasattr(sys, "_MEIPASS"):
+        return os.path.join(sys._MEIPASS, name)
+    return name
 
 # ---------- A1-нотация ----------
 def col_to_index(col_letters):
@@ -102,7 +111,7 @@ def load_groups():
         for base_group, colors in info["base_group_colors"].items():
             for c in colors:
                 reverse[tipo][c] = base_group
-        # сортировка по алфавиту — с учётом русских букв
+        # алфавитная сортировка цветов
         reverse[tipo] = dict(sorted(reverse[tipo].items(),
                                     key=lambda kv: kv[0].casefold()))
     return {
@@ -215,6 +224,7 @@ def test_price(price_path):
     except Exception as e:
         return False, f"Не удалось открыть прайс: {e}"
 
+    # Шаг 1: наличие листов
     available = set(xls.sheet_names)
     missing = {t: a["sheet"] for t, a in addresses.items() if a["sheet"] not in available}
     if missing:
@@ -222,6 +232,7 @@ def test_price(price_path):
         return False, ("Не найдены листы в прайсе:\n" + "\n".join(lines) +
                        "\n\nДоступные листы: " + ", ".join(xls.sheet_names))
 
+    # Шаг 2: данные в диапазонах
     problems = []
     for tipo, tipo_addr in addresses.items():
         sheet = tipo_addr["sheet"]
@@ -301,32 +312,32 @@ def setup_styles(root):
     style.configure("Panel.TLabel", background=BG_PANEL, foreground=FG_TEXT)
     style.configure("Muted.TLabel", background=BG_PANEL, foreground=FG_MUTED,
                     font=("Segoe UI", 9))
+    style.configure("FieldLabel.TLabel",
+                    background=BG_PANEL, foreground=FG_MUTED,
+                    font=("Segoe UI", 9))
     style.configure("Header.TLabel", background=BG_PANEL, foreground=FG_TEXT,
                     font=FONT_TITLE)
-
-    style.configure("TLabelframe", background=BG_PANEL, foreground=FG_TEXT,
-                    bordercolor=BORDER, relief="solid", borderwidth=1)
-    style.configure("TLabelframe.Label", background=BG_PANEL, foreground=ACCENT,
-                    font=FONT_BOLD)
-    style.configure("FieldLabel.TLabel",
-                    background=BG_PANEL,
-                    foreground=FG_MUTED,
-                    font=("Segoe UI", 9))
     style.configure("Summary.TLabel",
                     background=BG_PANEL, foreground=FG_MUTED,
                     font=("Segoe UI", 11))
     style.configure("SummaryValue.TLabel",
                     background=BG_PANEL, foreground=ACCENT,
                     font=("Segoe UI", 16, "bold"))
-    
-    
-    # Высокие поля ввода
+
+    style.configure("TLabelframe", background=BG_PANEL, foreground=FG_TEXT,
+                    bordercolor=BORDER, relief="solid", borderwidth=1)
+    style.configure("TLabelframe.Label", background=BG_PANEL, foreground=ACCENT,
+                    font=FONT_BOLD)
+
+    # Поля ввода (высокие, центрированные)
     style.configure("Tall.TEntry",
                     fieldbackground=BG_INPUT, foreground=FG_TEXT,
                     bordercolor=BORDER, lightcolor=BORDER, darkcolor=BORDER,
-                    insertcolor=FG_TEXT, padding=(8, 10), justify='center')
+                    insertcolor=FG_TEXT, padding=(8, 10),
+                    justify="center")
     style.map("Tall.TEntry", fieldbackground=[("focus", "#28395a")])
 
+    # Combobox — обычный и высокий
     style.configure("TCombobox",
                     fieldbackground=BG_INPUT, background=BG_INPUT,
                     foreground=FG_TEXT, arrowcolor=ACCENT,
@@ -336,9 +347,7 @@ def setup_styles(root):
               fieldbackground=[("readonly", BG_INPUT), ("focus", "#28395a")],
               foreground=[("readonly", FG_TEXT)],
               background=[("readonly", BG_INPUT)])
-    
-    
-    # Combobox — высокий (как кнопки)
+
     style.configure("Tall.TCombobox",
                     fieldbackground=BG_INPUT, background=BG_INPUT,
                     foreground=FG_TEXT, arrowcolor=ACCENT,
@@ -348,14 +357,11 @@ def setup_styles(root):
               fieldbackground=[("readonly", BG_INPUT), ("focus", "#28395a")],
               foreground=[("readonly", FG_TEXT)],
               background=[("readonly", BG_INPUT)])
-    
-    
+
     root.option_add("*TCombobox*Listbox.background", BG_INPUT)
     root.option_add("*TCombobox*Listbox.foreground", FG_TEXT)
     root.option_add("*TCombobox*Listbox.selectBackground", ACCENT)
     root.option_add("*TCombobox*Listbox.selectForeground", "#0d1b2a")
-
-
 
     style.configure("Accent.TButton",
                     background=ACCENT, foreground="#0d1b2a",
@@ -455,13 +461,58 @@ def make_icon_button(parent, symbol, bg, hover_bg, fg, command,
     return cv
 
 
+# ---------- Typeahead для Combobox ----------
+def attach_typeahead(combobox, get_values, reset_ms=800):
+    """
+    Позволяет в readonly-Combobox перебирать элементы по первым буквам.
+    """
+    state = {"buf": "", "after_id": None}
+
+    def reset():
+        state["buf"] = ""
+        state["after_id"] = None
+
+    def on_key(event):
+        ch = event.char
+        if not ch or not ch.isprintable():
+            return
+        if state["after_id"] is not None:
+            combobox.after_cancel(state["after_id"])
+        state["after_id"] = combobox.after(reset_ms, reset)
+        state["buf"] += ch
+
+        values = get_values()
+        if not values:
+            return "break"
+
+        buf = state["buf"].casefold()
+        for i, v in enumerate(values):
+            if v.casefold().startswith(buf):
+                combobox.current(i)
+                return "break"
+
+        state["buf"] = ch
+        buf = ch.casefold()
+        current = combobox.current()
+        n = len(values)
+        for offset in range(1, n + 1):
+            i = (current + offset) % n
+            if values[i].casefold().startswith(buf):
+                combobox.current(i)
+                return "break"
+
+        return "break"
+
+    combobox.bind("<KeyPress>", on_key, add="+")
+    return combobox
+
+
 # ---------- Карточка ----------
 class CardWidget(tk.Frame):
-    def __init__(self, parent, card, groups_data, on_edit, on_delete):
+    def __init__(self, parent, card, on_edit, on_delete):
         super().__init__(parent, highlightthickness=1,
                          highlightbackground=BORDER, bd=0)
         self.card = card
-        self.groups_data = groups_data
         self.on_edit = on_edit
         self.on_delete = on_delete
         self.bg = BG_CARD_ISO
@@ -476,8 +527,8 @@ class CardWidget(tk.Frame):
             w.destroy()
         c = self.card
 
-        # ---------- Справа (в порядке вызова справа → налево) ----------
-        # 1) Кнопки — самые правые
+        # ---------- Справа (справа → налево) ----------
+        # 1) Кнопки
         btns = tk.Frame(self, bg=self.bg)
         btns.pack(side="right", padx=(4, 12), pady=8)
 
@@ -513,17 +564,16 @@ class CardWidget(tk.Frame):
         left = tk.Frame(self, bg=self.bg)
         left.pack(side="left", fill="both", expand=True, padx=(12, 4), pady=8)
 
-        # бейдж
         badge_text = "ISO" if c.tipo == "isolite" else "VIT"
         badge_color = ACCENT if c.tipo == "isolite" else ACCENT_VIT
         badge = make_badge(left, badge_text, badge_color, size=42)
         badge.pack(side="left", padx=(0, 12))
 
-        # столбец "группа / короб"
+        # столбец группа / короб
         group_col = tk.Frame(left, bg=self.bg)
         group_col.pack(side="left", anchor="w")
 
-        group_text = f"группа: {c.group}" if getattr(c, "group", None) else "группа: —"
+        group_text = f"группа: {c.group}" if c.group else "группа: —"
         tk.Label(group_col, text=group_text, bg=self.bg, fg=FG_TEXT,
                  font=("Segoe UI", 10, "bold"), anchor="w"
                  ).pack(anchor="w")
@@ -531,31 +581,19 @@ class CardWidget(tk.Frame):
                  font=("Segoe UI", 10), anchor="w"
                  ).pack(anchor="w")
 
-        # столбец "цвет" — вертикально выровнен по центру двух строк
+        # столбец цвет — по центру двух строк
         color_col = tk.Frame(left, bg=self.bg)
-        color_col.pack(side="left", anchor="center", padx=(48, 0))
+        color_col.pack(side="left", anchor="center", padx=(24, 0))
 
         tk.Label(color_col, text=c.color, bg=self.bg, fg=FG_TEXT,
                  font=("Segoe UI", 13, "bold"), anchor="center"
                  ).pack(anchor="center")
-        
-        group = resolve_group(self.groups_data, c.tipo, c.color, c.korob) \
-            if self.groups_data else None
-        group_text = f"группа: {group}" if group else "группа: —"
-        
-        # tk.Label(labels, text=group_text, bg=self.bg, fg=FG_MUTED,
-        #          font=("Segoe UI", 10), anchor="w"
-        #          ).pack(anchor="w")
-
-        # tk.Label(labels, text=f"короб: {c.korob}", bg=self.bg, fg=FG_MUTED,
-        #          font=("Segoe UI", 10), anchor="w"
-        #          ).pack(anchor="w")
 
     def refresh(self):
         self._render()
 
 
-# ---------- Диалог ----------
+# ---------- Диалог редактирования ----------
 class EditDialog(tk.Toplevel):
     def __init__(self, parent, card, groups_data, on_save):
         super().__init__(parent)
@@ -594,6 +632,8 @@ class EditDialog(tk.Toplevel):
         self.color_cb = ttk.Combobox(frm, textvariable=self.color_var,
                                      state="readonly", width=24)
         self.color_cb.grid(row=2, column=1, sticky="ew", pady=4)
+        attach_typeahead(self.color_cb,
+                         get_values=lambda: list(self.color_cb["values"]))
 
         ttk.Label(frm, text="Короб:", style="Panel.TLabel"
                   ).grid(row=3, column=0, sticky="w", pady=4)
@@ -603,11 +643,13 @@ class EditDialog(tk.Toplevel):
 
         ttk.Label(frm, text="Ширина (мм):", style="Panel.TLabel"
                   ).grid(row=4, column=0, sticky="w", pady=4)
-        ttk.Entry(frm, textvariable=self.w_var, width=26).grid(row=4, column=1, sticky="ew", pady=4)
+        ttk.Entry(frm, textvariable=self.w_var, width=26
+                  ).grid(row=4, column=1, sticky="ew", pady=4)
 
         ttk.Label(frm, text="Высота (мм):", style="Panel.TLabel"
                   ).grid(row=5, column=0, sticky="w", pady=4)
-        ttk.Entry(frm, textvariable=self.h_var, width=26).grid(row=5, column=1, sticky="ew", pady=4)
+        ttk.Entry(frm, textvariable=self.h_var, width=26
+                  ).grid(row=5, column=1, sticky="ew", pady=4)
 
         frm.columnconfigure(1, weight=1)
 
@@ -655,8 +697,8 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Расчёт цен")
-        self.geometry("1020x660")
-        self.minsize(920, 580)
+        self.geometry("1060x680")
+        self.minsize(960, 600)
 
         setup_styles(self)
 
@@ -667,35 +709,25 @@ class App(tk.Tk):
 
         self._build_ui()
         self._update_summary()
-        
+
         if self.config_data.get("price_path"):
             self._rebuild_price_cache(silent=True)
-
-    def _update_summary(self):
-            count = len(self.cards)
-            total = sum(
-                c.price for c in self.cards
-                if c.price is not None
-            )
-            # print("DBG cards:", len(self.cards), [c.price for c in self.cards])
-            self.summary_count_var.set(f"Позиций: {count}")
-            self.summary_total_var.set(f"Итого: {int(round(total))} ₽")
 
     def _build_ui(self):
         top = ttk.Frame(self)
         top.pack(fill="x", padx=14, pady=(14, 6))
 
+        # ---------- Блок ввода ----------
         inputs = ttk.LabelFrame(top, text="Добавить карточку", padding=12)
         inputs.pack(side="left", fill="both", expand=True)
 
-                # ---------- Подблок 1: Параметры ----------
+        # подблок 1: параметры
         params = ttk.Frame(inputs, style="Panel.TFrame")
         params.pack(fill="x", pady=(0, 10))
 
         ttk.Label(params, text="Параметры", style="Muted.TLabel"
                   ).grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 8))
 
-        # подписи над элементами
         ttk.Label(params, text="Тип", style="FieldLabel.TLabel"
                   ).grid(row=1, column=0, sticky="w", padx=(0, 6))
         ttk.Label(params, text="Цвет", style="FieldLabel.TLabel"
@@ -717,23 +749,28 @@ class App(tk.Tk):
                                      state="readonly", width=16,
                                      style="Tall.TCombobox")
         self.color_cb.grid(row=2, column=1, sticky="ew", padx=(0, 6))
+        attach_typeahead(self.color_cb,
+                         get_values=lambda: list(self.color_cb["values"]))
 
-        ttk.Combobox(params, textvariable=self.korob_var,
-                     values=KOROB_COLORS, state="readonly", width=14,
-                     style="Tall.TCombobox"
-                     ).grid(row=2, column=2, sticky="ew")
+        korob_cb = ttk.Combobox(params, textvariable=self.korob_var,
+                                values=KOROB_COLORS, state="readonly", width=14,
+                                style="Tall.TCombobox")
+        korob_cb.grid(row=2, column=2, sticky="ew")
+        attach_typeahead(korob_cb, get_values=lambda: KOROB_COLORS)
 
         for i in range(3):
             params.columnconfigure(i, weight=1)
 
-                       # ---------- Подблок 2: Размеры ----------
+        # разделитель
+        tk.Frame(inputs, bg=BORDER, height=1).pack(fill="x", pady=(0, 10))
+
+        # подблок 2: размеры
         dims = ttk.Frame(inputs, style="Panel.TFrame")
         dims.pack(fill="x")
 
         ttk.Label(dims, text="Размеры и добавление", style="Muted.TLabel"
                   ).grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 8))
 
-        # подписи
         ttk.Label(dims, text="Ширина, мм", style="FieldLabel.TLabel"
                   ).grid(row=1, column=0, sticky="w", padx=(0, 8))
         ttk.Label(dims, text="Высота, мм", style="FieldLabel.TLabel"
@@ -743,7 +780,6 @@ class App(tk.Tk):
         ttk.Label(dims, text="", style="FieldLabel.TLabel"
                   ).grid(row=1, column=3, sticky="w")
 
-        # поля ввода
         self.w_entry = ttk.Entry(dims, textvariable=self.w_var, style="Tall.TEntry")
         self.w_entry.grid(row=2, column=0, sticky="ew", padx=(0, 8))
         self._placeholder(self.w_entry, self.w_var, "Например, 500")
@@ -752,7 +788,6 @@ class App(tk.Tk):
         self.h_entry.grid(row=2, column=1, sticky="ew", padx=(0, 8))
         self._placeholder(self.h_entry, self.h_var, "Например, 1200")
 
-        # кнопка очистки (иконка)
         clear_holder = tk.Frame(dims, bg=BG_PANEL, height=42)
         clear_holder.grid(row=2, column=2, sticky="ns", padx=(0, 8))
         clear_holder.grid_propagate(False)
@@ -764,19 +799,17 @@ class App(tk.Tk):
         )
         clear_btn.pack()
 
-        # кнопка добавления — растягиваем на всё оставшееся место
         ttk.Button(dims, text="+ Добавить", style="Accent.TButton",
                    command=self._add_card).grid(row=2, column=3, sticky="ew")
 
-        # ширина инпутов — примерно четверть от доступной ширины
         dims.columnconfigure(0, weight=1, uniform="size", minsize=100)
         dims.columnconfigure(1, weight=1, uniform="size", minsize=100)
-        dims.columnconfigure(2, weight=0, minsize=52)   # кнопка очистки
-        dims.columnconfigure(3, weight=3)               # растягивающаяся кнопка
+        dims.columnconfigure(2, weight=0, minsize=52)
+        dims.columnconfigure(3, weight=3)
 
         self._update_colors()
 
-        # Настройки
+        # ---------- Настройки ----------
         settings = ttk.LabelFrame(top, text="Настройки", padding=12)
         settings.pack(side="right", fill="y", padx=(10, 0))
 
@@ -792,15 +825,14 @@ class App(tk.Tk):
         ttk.Button(settings, text="Обновить цены", style="Ghost.TButton",
                    command=self._rebuild_price_cache).pack(fill="x", pady=2)
 
-        # Список карточек
+        # ---------- Карточки + Итого ----------
         list_frame = ttk.LabelFrame(self, text="Карточки", padding=8)
         list_frame.pack(fill="both", expand=True, padx=14, pady=(6, 14))
 
-        # --- Итого: упаковываем ДО канваса с side="bottom" ---
+        # Итого — снизу, ВНУТРИ list_frame, до канваса
         summary = tk.Frame(list_frame, bg=BG_PANEL)
         summary.pack(side="bottom", fill="x", pady=(8, 0))
 
-        # тонкая линия-разделитель сверху
         tk.Frame(summary, bg=BORDER, height=1).pack(fill="x", pady=(0, 8))
 
         row = tk.Frame(summary, bg=BG_PANEL)
@@ -819,7 +851,7 @@ class App(tk.Tk):
                  font=("Segoe UI", 16, "bold"), anchor="e"
                  ).pack(side="right")
 
-        # --- Прокручиваемая область ---
+        # Прокручиваемая область
         self.canvas = tk.Canvas(list_frame, highlightthickness=0, bg=BG_PANEL)
         scroll = ttk.Scrollbar(list_frame, orient="vertical", command=self.canvas.yview)
         self.cards_frame = tk.Frame(self.canvas, bg=BG_PANEL)
@@ -835,8 +867,6 @@ class App(tk.Tk):
         scroll.pack(side="right", fill="y")
 
         self._bind_mousewheel()
-
-        
 
     # ---------- Плейсхолдеры ----------
     def _placeholder(self, entry, var, text):
@@ -861,6 +891,15 @@ class App(tk.Tk):
         if v == placeholder:
             return None
         return v
+
+    def _clear_size_fields(self):
+        for entry, text in (
+            (self.w_entry, "Например, 500"),
+            (self.h_entry, "Например, 1200"),
+        ):
+            entry.delete(0, "end")
+            entry.insert(0, text)
+            entry.configure(foreground=FG_MUTED)
 
     # ---------- Скролл ----------
     def _bind_mousewheel(self):
@@ -907,22 +946,22 @@ class App(tk.Tk):
     def _run_test(self):
         ok, msg = test_price(self.path_var.get())
         (messagebox.showinfo if ok else messagebox.showwarning)("Тест", msg)
-    def _clear_size_fields(self):
-            for entry, text in (
-                (self.w_entry, "Например, 500"),
-                (self.h_entry, "Например, 1200"),
-            ):
-                entry.delete(0, "end")
-                entry.insert(0, text)
-                entry.configure(foreground=FG_MUTED)
-            if not self.color_var.get():
-                messagebox.showerror("Ошибка", "Выберите цвет")
-            return
-    def _add_card(self):
-        
 
-        w_raw = self._read_entry(self.w_var, "Ширина, мм")
-        h_raw = self._read_entry(self.h_var, "Высота, мм")
+    # ---------- Итого ----------
+    def _update_summary(self):
+        count = len(self.cards)
+        total = sum(c.price for c in self.cards if c.price is not None)
+        self.summary_count_var.set(f"Позиций: {count}")
+        self.summary_total_var.set(f"Итого: {int(round(total))} ₽")
+
+    # ---------- Карточки ----------
+    def _add_card(self):
+        if not self.color_var.get():
+            messagebox.showerror("Ошибка", "Выберите цвет")
+            return
+
+        w_raw = self._read_entry(self.w_var, "Например, 500")
+        h_raw = self._read_entry(self.h_var, "Например, 1200")
         if w_raw is None or h_raw is None:
             messagebox.showerror("Ошибка", "Введите ширину и высоту (мм)")
             return
@@ -938,24 +977,20 @@ class App(tk.Tk):
         color = self.color_var.get()
         korob = self.korob_var.get()
 
+        group = resolve_group(self.groups_data, tipo, color, korob)
         price = None
         if self.price_cache:
             price = find_price(self.price_cache, self.groups_data,
                                tipo, color, korob, w, h)
 
-        group = resolve_group(self.groups_data, tipo, color, korob)
         card = Card(tipo, color, w, h, korob, price, group=group)
         self.cards.append(card)
-        widget = CardWidget(self.cards_frame, card, self.groups_data,
+
+        widget = CardWidget(self.cards_frame, card,
                             self._edit_card, self._delete_card)
         widget.pack(fill="x", pady=4, padx=4)
-        
-        # print("ADD:", len(self.cards), card.price)
-        # self._update_summary()
-        # print("AFTER:", self.summary_count_var.get(), self.summary_total_var.get())
         self._update_summary()
-        
-        
+
     def _edit_card(self, widget):
         card = widget.card
 
@@ -966,7 +1001,7 @@ class App(tk.Tk):
                                      c.tipo, c.color, c.korob, c.w_mm, c.h_mm)
             widget.refresh()
             self._update_summary()
-            
+
         EditDialog(self, card, self.groups_data, on_save)
 
     def _delete_card(self, widget):
